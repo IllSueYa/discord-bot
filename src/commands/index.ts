@@ -1,9 +1,13 @@
 import {
   ButtonBuilder,
+  ButtonStyle,
   CommandInteraction,
   ModalSubmitInteraction,
   StringSelectMenuBuilder,
 } from 'discord.js';
+import fs from 'fs';
+import path from 'path';
+
 import {Command} from '../interfaces';
 import campaign from './campaign';
 import dispatches from './dispatches';
@@ -18,7 +22,7 @@ import summary from './summary';
 import superstore from './superstore';
 import updates from './updates';
 // import warbond from './warbond';
-// import wiki from './wiki';
+import wiki from './wiki';
 import {Category, WikiData} from '../handlers';
 
 const commandList: Command[] = [
@@ -82,7 +86,70 @@ const wikiCmd: {
   pages: [],
 };
 
+const wikiPath = path.join(process.cwd(), 'wiki');
+const categoryPath = path.join(wikiPath, 'index.json');
+
+const categories = JSON.parse(
+  fs.readFileSync(categoryPath, 'utf8')
+) as Category[];
+
+wikiCmd.categories = categories;
+
+for (const category of categories) {
+  const categoryDirectory = path.join(wikiPath, category.directory);
+
+  if (!fs.existsSync(categoryDirectory)) {
+    console.warn(`Wiki category directory not found: ${category.directory}`);
+    continue;
+  }
+
+  const files = fs
+    .readdirSync(categoryDirectory)
+    .filter(file => file.endsWith('.json'));
+
+  const categoryPages: WikiData[] = [];
+
+  for (const file of files) {
+    const filePath = path.join(categoryDirectory, file);
+
+    const page = JSON.parse(
+      fs.readFileSync(filePath, 'utf8')
+    ) as WikiData;
+
+    wikiCmd.pages.push(page);
+    categoryPages.push(page);
+  }
+
+  const button = new ButtonBuilder()
+    .setCustomId(category.directory)
+    .setLabel(category.display_name || category.directory)
+    .setStyle(ButtonStyle.Secondary);
+
+  wikiCmd.buttons.push(button);
+
+  if (categoryPages.length > 0) {
+    const selectMenu = new StringSelectMenuBuilder()
+      .setCustomId(category.directory)
+      .setPlaceholder(
+        `Select a ${category.display_name || category.directory} page`
+      )
+      .addOptions(
+        categoryPages.slice(0, 25).map(page => ({
+          label: page.title,
+          value: page.page,
+          description:
+            page.description && page.description.length > 0
+              ? page.description.substring(0, 100)
+              : undefined,
+        }))
+      );
+
+    wikiCmd.dirSelect[category.directory] = selectMenu;
+  }
+}
+  
 export {
+  
   commandList,
   commandHash,
   modalHash,
