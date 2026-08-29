@@ -241,25 +241,64 @@ export async function getData() {
     }
   } else {
     logger.error('Fallback to dealloc API', {type: 'API'});
-    // fallback to dealloc API with delay between calls to avoid rate limits (429s)
-    apiClient.defaults.baseURL = FALLBACK_URL;
-    apiClient.defaults.headers['Authorization'] = `Bearer ${DEALLOC_TOKEN}`;
-    const {id} = await (await apiClient.get('/WarSeason/current/WarID')).data;
-    warInfo = await (await apiClient.get(`/WarSeason/${id}/WarInfo`)).data;
-    status = await (await apiClient.get(`/WarSeason/${id}/Status`)).data;
-    status.timeUtc = Date.now();
-    UTCOffset = Math.floor(status.timeUtc - status.time * 1000); // use this value to add to the time to get the UTC time in seconds
-    assignment = await (await apiClient.get(`/v2/Assignment/War/${id}`)).data;
-    planetStats = await (await apiClient.get(`/Stats/War/${id}/Summary`)).data;
-    newsFeed = (await (
-      await apiClient.get(`/NewsFeed/${id}`)
-    ).data.map((item: Omit<NewsFeedItem, 'publishedUtc'>) => ({
-      ...item,
-      publishedUtc: UTCOffset + item.published * 1000,
-    }))) as NewsFeedItem[];
-    newsFeed.sort((a, b) => b.published - a.published);
-  }
 
+    apiClient.defaults.baseURL = FALLBACK_URL;
+
+    // The public fallback API does not need the old DEALLOC_TOKEN.
+    delete apiClient.defaults.headers.common['Authorization'];
+
+    const sleep = (ms: number) =>
+        new Promise(resolve => setTimeout(resolve, ms));
+
+    const getWithRetry = async (url: string, retries = 3): Promise<any> => {
+        try {
+            return await apiClient.get(url);
+        } catch (err: any) {
+            if (err?.response?.status === 429 && retries > 0) {
+                const retryAfter = Number(
+                    err.response.headers?.['retry-after'] ?? 3
+                );
+
+                logger.info(
+                    `Rate limited by Helldivers API. Retrying in ${retryAfter}s...`,
+                    {type: 'API'}
+                );
+
+                await sleep(Math.max(retryAfter * 1000, 3000));
+                return getWithRetry(url, retries - 1);
+            }
+
+            throw err;
+        }
+    };
+
+    const {data: id} = await getWithRetry('/WarSeason/current/WarID');
+
+    await sleep(2500);
+    warInfo = (await getWithRetry(`/WarSeason/${id}/WarInfo`)).data;
+
+    await sleep(2500);
+    status = (await getWithRetry(`/WarSeason/${id}/Status`)).data;
+
+    status.timeUtc = Date.now();
+    UTCOffset = Math.floor(status.timeUtc - status.time * 1000);
+
+    await sleep(2500);
+    assignment = (await getWithRetry(`/v2/Assignment/War/${id}`)).data;
+
+    await sleep(2500);
+    planetStats = (await getWithRetry(`/Stats/War/${id}/Summary`)).data;
+
+    await sleep(2500);
+    newsFeed = (await getWithRetry(`/NewsFeed/${id}`)).data.map(
+        (item: Omit<NewsFeedItem, 'publishedUtc'>) => ({
+            ...item,
+            publishedUtc: UTCOffset + item.published * 1000,
+        })
+    ) as NewsFeedItem[];
+
+    newsFeed.sort((a, b) => b.published - a.published);
+}
   // Fetch Discord announcements from the DB
   const discAnnouncements = await db.query.helldiversDiscordAnns.findMany();
   const hd2DiscAnnouncements: HelldiversDiscordAnnouncement[] =
